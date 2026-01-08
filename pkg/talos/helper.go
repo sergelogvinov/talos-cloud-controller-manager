@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/siderolabs/talos-cloud-controller-manager/pkg/metrics"
@@ -23,7 +24,6 @@ import (
 	clientkubernetes "k8s.io/client-go/kubernetes"
 	cloudproviderapi "k8s.io/cloud-provider/api"
 	cloudnodeutil "k8s.io/cloud-provider/node/helpers"
-	"k8s.io/utils/strings/slices"
 )
 
 func ipDiscovery(nodeIPs []string, ifaces []network.AddressStatusSpec) (publicIPv4s, publicIPv6s []string) {

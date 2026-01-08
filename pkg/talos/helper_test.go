@@ -242,7 +242,7 @@ func TestSyncNodeLabels(t *testing.T) {
 	client, err := newClient(ctx, &cfg)
 	assert.NoError(t, err)
 
-	client.kclient = fake.NewSimpleClientset(nodes)
+	client.kclient = fake.NewClientset(nodes)
 
 	for _, tt := range []struct {
 		name          string
@@ -371,6 +371,8 @@ func TestSyncNodeLabels(t *testing.T) {
 
 			node, err := client.kclient.CoreV1().Nodes().Get(ctx, tt.node.Name, metav1.GetOptions{})
 			assert.NoError(t, err)
+
+			node.ManagedFields = nil // ignore managed fields in comparison
 			assert.Equal(t, tt.expectedNode, node)
 		})
 	}
@@ -526,7 +528,7 @@ func TestCSRNodeChecks(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			kclient := fake.NewSimpleClientset(nodes)
+			kclient := fake.NewClientset(nodes)
 			approve, err := CSRNodeChecks(ctx, kclient, tt.cert)
 
 			if tt.expectedError != nil {
