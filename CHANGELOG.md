@@ -1,4 +1,16 @@
 
+<a name="v1.12.0"></a>
+## [v1.12.0](https://github.com/siderolabs/talos-cloud-controller-manager/compare/v1.11.0...v1.12.0) (2026-01-09)
+
+Welcome to the v1.12.0 release of Talos CCM!
+
+### Changelog
+
+* 0fe5272 chore: bump deps
+* c4f8766 fix: trigger rolling update on ConfigMap changes via checksum annotation
+* 7ba6f55 chore: bump deps
+* b25a437 fix: broken doc link
+
 <a name="v1.11.0"></a>
 ## [v1.11.0](https://github.com/siderolabs/talos-cloud-controller-manager/compare/v1.10.1...v1.11.0) (2025-09-17)
 
