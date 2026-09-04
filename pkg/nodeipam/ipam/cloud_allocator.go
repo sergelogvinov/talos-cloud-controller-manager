@@ -567,6 +567,7 @@ func (r *cloudAllocator) defineNodeGlobalCIDRs(ctx context.Context, node *v1.Nod
 		}
 	}
 
+	// Get all public IPv6 CIDRs from the linux node.
 	_, cidrs := talosclient.NodeCIDRDiscovery(ipv6, ifaces)
 	logger.V(4).Info("Node has IPv6 CIDRs", "node", klog.KObj(node), "CIDRs", cidrs)
 
