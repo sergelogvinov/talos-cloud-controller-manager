@@ -16,4 +16,5 @@ limitations under the License.
 
 // Package nodeipam contains code for syncing cloud instances with
 // node registry
-package nodeipam // import "k8s.io/kubernetes/pkg/controller/nodeipam"
+// was import "k8s.io/kubernetes/pkg/controller/nodeipam"
+package nodeipam

@@ -44,14 +44,15 @@ func parseCSR(pemBytes []byte) (*x509.CertificateRequest, error) {
 }
 
 var (
-	errNotCertificateRequest      = fmt.Errorf("PEM block type must be CERTIFICATE REQUEST")
-	errOrganizationNotSystemNodes = fmt.Errorf("subject organization is not system:nodes")
-	errCommonNameNotSystemNode    = fmt.Errorf("subject common name does not begin with system:node: ")
-	errDNSOrIPSANRequired         = fmt.Errorf("DNS or IP subjectAltName is required")
-	errDNSNameNotAllowed          = fmt.Errorf("DNS subjectAltNames are not allowed")
-	errEmailSANNotAllowed         = fmt.Errorf("email subjectAltNames are not allowed")
-	errURISANNotAllowed           = fmt.Errorf("URI subjectAltNames are not allowed")
-	errKeyUsageMismatch           = fmt.Errorf("key usage does not match")
+	errNotCertificateRequest         = fmt.Errorf("PEM block type must be CERTIFICATE REQUEST")
+	errOrganizationNotSystemNodes    = fmt.Errorf("subject organization is not system:nodes")
+	errCommonNameNotSystemNode       = fmt.Errorf("subject common name does not begin with system:node: ")
+	errCommonNameNotMatchingUsername = fmt.Errorf("subject common name does not match the CSR username")
+	errDNSOrIPSANRequired            = fmt.Errorf("DNS or IP subjectAltName is required")
+	errDNSNameNotAllowed             = fmt.Errorf("DNS subjectAltNames are not allowed")
+	errEmailSANNotAllowed            = fmt.Errorf("email subjectAltNames are not allowed")
+	errURISANNotAllowed              = fmt.Errorf("URI subjectAltNames are not allowed")
+	errKeyUsageMismatch              = fmt.Errorf("key usage does not match")
 )
 
 var kubeletServingRequiredUsages = []certificatesv1.KeyUsage{
@@ -60,13 +61,17 @@ var kubeletServingRequiredUsages = []certificatesv1.KeyUsage{
 	certificatesv1.UsageServerAuth,
 }
 
-func validateKubeletServingCSR(req *x509.CertificateRequest, keyUsages []certificatesv1.KeyUsage) error {
+// validateKubeletServingCSR checks basic requirements for a Kubelet serving CSR.
+// It ensures that the CSR has the necessary DNS or IP SANs, correct subject fields, and appropriate key usages.
+func validateKubeletServingCSR(req *x509.CertificateRequest, csrSpec certificatesv1.CertificateSigningRequestSpec) error {
 	if len(req.DNSNames) == 0 && len(req.IPAddresses) == 0 {
 		return errDNSOrIPSANRequired
 	}
 
 	if slices.ContainsFunc(req.DNSNames, func(name string) bool {
-		return name == "kubernetes" || strings.HasPrefix(name, "kubernetes.")
+		n := strings.ToLower(name)
+
+		return n == "kubernetes" || strings.HasPrefix(n, "kubernetes.") || strings.HasPrefix(n, "*.")
 	}) {
 		return errDNSNameNotAllowed
 	}
@@ -83,8 +88,12 @@ func validateKubeletServingCSR(req *x509.CertificateRequest, keyUsages []certifi
 		return errOrganizationNotSystemNodes
 	}
 
-	if !strings.HasPrefix(req.Subject.CommonName, "system:node:") { //nolint:goconst
+	if name, ok := strings.CutPrefix(req.Subject.CommonName, "system:node:"); !ok || name == "" { //nolint:goconst
 		return errCommonNameNotSystemNode
+	}
+
+	if req.Subject.CommonName != csrSpec.Username {
+		return errCommonNameNotMatchingUsername
 	}
 
 	usageMap := map[certificatesv1.KeyUsage]bool{}
@@ -92,7 +101,7 @@ func validateKubeletServingCSR(req *x509.CertificateRequest, keyUsages []certifi
 		usageMap[u] = false
 	}
 
-	for _, ku := range keyUsages {
+	for _, ku := range csrSpec.Usages {
 		if _, u := usageMap[ku]; !u {
 			return errKeyUsageMismatch
 		}

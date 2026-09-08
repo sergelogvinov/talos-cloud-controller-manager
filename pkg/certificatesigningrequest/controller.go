@@ -5,8 +5,9 @@ import (
 	"context"
 	"crypto/x509"
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/siderolabs/talos-cloud-controller-manager/pkg/metrics"
 
 	certificatesv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -16,8 +17,14 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// Verdict represents the result of validating a CertificateSigningRequest.
+type Verdict struct {
+	Valid   bool
+	Message string
+}
+
 // ProviderChecks is a function that checks if the CertificateSigningRequest is valid in the provider.
-type ProviderChecks func(context.Context, clientkubernetes.Interface, *x509.CertificateRequest) (bool, error)
+type ProviderChecks func(context.Context, clientkubernetes.Interface, certificatesv1.CertificateSigningRequestSpec, *x509.CertificateRequest) (Verdict, error)
 
 // Reconciler is the controller for CertificateSigningRequest.
 type Reconciler struct {
@@ -34,10 +41,8 @@ func NewCsrController(kclient clientkubernetes.Interface, fn ProviderChecks) *Re
 }
 
 // Run the CertificateSigningRequest controller.
-//
-//nolint:gocyclo
 func (r *Reconciler) Run(ctx context.Context) {
-	watchTimeoutSeconds := int64(time.Minute * 5)
+	watchTimeoutSeconds := int64(60 * 5) // 5 minutes
 
 	for {
 		watcher, err := r.kclient.
@@ -45,7 +50,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 			CertificateSigningRequests().
 			Watch(ctx, metav1.ListOptions{
 				Watch:          true,
-				TimeoutSeconds: &watchTimeoutSeconds, // Default timeout: 20 minutes.
+				TimeoutSeconds: &watchTimeoutSeconds,
 			})
 		if err != nil {
 			klog.ErrorS(err, "CertificateSigningRequestReconciler: failed to list CSR resources")
@@ -80,34 +85,23 @@ func (r *Reconciler) Run(ctx context.Context) {
 
 				csr, ok := event.Object.DeepCopyObject().(*certificatesv1.CertificateSigningRequest)
 				if !ok {
-					klog.ErrorS(err, "CertificateSigningRequestReconciler: expected event of type *CertificateSigningRequest",
+					klog.V(5).InfoS("CertificateSigningRequestReconciler: expected event of type *CertificateSigningRequest",
 						"kind", event.Object.GetObjectKind())
 
 					continue
 				}
 
-				if csr.Spec.SignerName != certificatesv1.KubeletServingSignerName {
-					klog.V(5).InfoS("CertificateSigningRequestReconciler: ignoring, not a Kubelet serving certificate",
-						"signer", csr.Spec.SignerName)
-
-					continue
-				}
-
-				valid, err := r.Reconcile(ctx, csr)
+				update, err := r.Reconcile(ctx, csr)
 				if err != nil {
 					klog.ErrorS(err, "CertificateSigningRequestReconciler: failed to reconcile CSR", "name", csr.Name)
 
 					continue
 				}
 
-				if _, err := r.kclient.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, csr.Name, csr, metav1.UpdateOptions{}); err != nil {
-					klog.ErrorS(err, "CertificateSigningRequestReconciler: failed to approve/deny CSR", "name", csr.Name)
-				}
-
-				if !valid {
-					klog.InfoS("CertificateSigningRequestReconciler: has been denied", "name", csr.Name)
-				} else {
-					klog.V(3).InfoS("CertificateSigningRequestReconciler: has been approved", "name", csr.Name)
+				if update {
+					if _, err := r.kclient.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, csr.Name, csr, metav1.UpdateOptions{}); err != nil {
+						klog.ErrorS(err, "CertificateSigningRequestReconciler: failed to approve/deny CSR", "name", csr.Name)
+					}
 				}
 			}
 		}
@@ -117,57 +111,81 @@ func (r *Reconciler) Run(ctx context.Context) {
 // Reconcile the CertificateSigningRequest.
 func (r *Reconciler) Reconcile(ctx context.Context, csr *certificatesv1.CertificateSigningRequest) (bool, error) {
 	switch {
-	case len(csr.Status.Conditions) > 0:
-		return false, fmt.Errorf("already been approved or denied, signer %s", csr.Spec.SignerName)
 	case csr.Spec.SignerName != certificatesv1.KubeletServingSignerName:
-		return false, fmt.Errorf("is not Kubelet serving certificate, signer %s", csr.Spec.SignerName)
-	case !strings.HasPrefix(csr.Spec.Username, "system:node:"):
-		return false, fmt.Errorf("ignoring, %s, signer %s", errCommonNameNotSystemNode, csr.Spec.SignerName)
-	case csr.Status.Certificate != nil:
-		return false, fmt.Errorf("ignoring, already signed, username %s", csr.Spec.Username)
-	default:
-		x509cr, err := parseCSR(csr.Spec.Request)
-		if err != nil {
-			return false, err
-		}
+		klog.V(5).InfoS("CertificateSigningRequestReconciler: ignoring, not a Kubelet serving certificate",
+			"signer", csr.Spec.SignerName)
 
-		err = validateKubeletServingCSR(x509cr, csr.Spec.Usages)
-		if err != nil {
-			r.updateApproval(csr, false, err.Error())
+		return false, nil
 
-			return false, nil
-		}
+	case len(csr.Status.Certificate) != 0:
+		klog.V(5).InfoS("CertificateSigningRequestReconciler: ignoring, already signed",
+			"username", csr.Spec.Username)
 
-		valid, err := r.providerChecks(ctx, r.kclient, x509cr)
-		if err != nil {
-			return valid, fmt.Errorf("providerChecks has an error: %v", err)
-		}
+		return false, nil
 
-		if valid {
-			r.updateApproval(csr, valid, "all checks passed")
-		} else {
-			r.updateApproval(csr, valid, "providerChecks failed")
-		}
+	case len(csr.Status.Conditions) > 0:
+		klog.V(5).InfoS("CertificateSigningRequestReconciler: ignoring, already approved or denied",
+			"signer", csr.Spec.SignerName)
 
-		return valid, nil
+		return false, nil
 	}
+
+	x509cr, err := parseCSR(csr.Spec.Request)
+	if err != nil {
+		klog.ErrorS(err, "CertificateSigningRequestReconciler: failed to parse CSR", "name", csr.Name)
+		r.updateApproval(csr, false, err.Error())
+
+		return true, nil
+	}
+
+	err = validateKubeletServingCSR(x509cr, csr.Spec)
+	if err != nil {
+		klog.ErrorS(err, "CertificateSigningRequestReconciler: failed to validate CSR", "name", csr.Name)
+		r.updateApproval(csr, false, err.Error())
+
+		return true, nil
+	}
+
+	verdict, err := r.providerChecks(ctx, r.kclient, csr.Spec, x509cr)
+	if err != nil {
+		return false, fmt.Errorf("providerChecks has an error: %v", err)
+	}
+
+	r.updateApproval(csr, verdict.Valid, verdict.Message)
+
+	if !verdict.Valid {
+		klog.InfoS("CertificateSigningRequestReconciler: has been denied", "name", csr.Name)
+	} else {
+		klog.InfoS("CertificateSigningRequestReconciler: has been approved", "name", csr.Name)
+	}
+
+	return true, nil
 }
 
 func (r *Reconciler) updateApproval(csr *certificatesv1.CertificateSigningRequest, approved bool, reason string) {
+	reasonMessage := ""
+	if reason != "" {
+		reasonMessage = fmt.Sprintf(", reason: %s", reason)
+	}
+
 	if approved {
+		metrics.CSRApprovedCount(metrics.ApprovalStatusApprove)
+
 		csr.Status.Conditions = append(csr.Status.Conditions, certificatesv1.CertificateSigningRequestCondition{
 			Type:           certificatesv1.CertificateApproved,
 			Status:         corev1.ConditionTrue,
 			Reason:         "Approved by TalosCloudControllerManager",
-			Message:        "This CSR was approved by Talos Cloud Controller Manager",
+			Message:        "This CSR was approved by Talos Cloud Controller Manager" + reasonMessage,
 			LastUpdateTime: metav1.Time{Time: time.Now().UTC()},
 		})
 	} else {
+		metrics.CSRApprovedCount(metrics.ApprovalStatusDeny)
+
 		csr.Status.Conditions = append(csr.Status.Conditions, certificatesv1.CertificateSigningRequestCondition{
 			Type:           certificatesv1.CertificateDenied,
 			Status:         corev1.ConditionTrue,
 			Reason:         "Denied by TalosCloudControllerManager",
-			Message:        "This CSR was denied by Talos Cloud Controller Manager, Reason: " + reason,
+			Message:        "This CSR was denied by Talos Cloud Controller Manager" + reasonMessage,
 			LastUpdateTime: metav1.Time{Time: time.Now().UTC()},
 		})
 	}

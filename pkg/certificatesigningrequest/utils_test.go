@@ -65,9 +65,9 @@ func TestValidateKubeletServingCSRValid(t *testing.T) {
 	}
 
 	tests := []struct {
-		msg       string
-		x509cr    x509.CertificateRequest
-		keyUsages []certificatesv1.KeyUsage
+		msg     string
+		x509cr  x509.CertificateRequest
+		csrSpec certificatesv1.CertificateSigningRequestSpec
 	}{
 		{
 			msg: "Only DNSNames",
@@ -76,9 +76,12 @@ func TestValidateKubeletServingCSRValid(t *testing.T) {
 					CommonName:   cname,
 					Organization: []string{org},
 				},
-				DNSNames: []string{"valid"},
+				DNSNames: []string{"valid", "valid.example.com"},
 			},
-			keyUsages: usages,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
 		},
 		{
 			msg: "Only IPAddresses",
@@ -89,7 +92,10 @@ func TestValidateKubeletServingCSRValid(t *testing.T) {
 				},
 				IPAddresses: []net.IP{net.ParseIP("1.2.3.4")},
 			},
-			keyUsages: usages,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
 		},
 		{
 			msg: "Key usages RSA",
@@ -101,10 +107,13 @@ func TestValidateKubeletServingCSRValid(t *testing.T) {
 				DNSNames:    []string{"valid"},
 				IPAddresses: []net.IP{net.ParseIP("1.2.3.4")},
 			},
-			keyUsages: []certificatesv1.KeyUsage{
-				certificatesv1.UsageKeyEncipherment,
-				certificatesv1.UsageDigitalSignature,
-				certificatesv1.UsageServerAuth,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages: []certificatesv1.KeyUsage{
+					certificatesv1.UsageKeyEncipherment,
+					certificatesv1.UsageDigitalSignature,
+					certificatesv1.UsageServerAuth,
+				},
 			},
 		},
 		{
@@ -117,9 +126,12 @@ func TestValidateKubeletServingCSRValid(t *testing.T) {
 				DNSNames:    []string{"valid"},
 				IPAddresses: []net.IP{net.ParseIP("1.2.3.4")},
 			},
-			keyUsages: []certificatesv1.KeyUsage{
-				certificatesv1.UsageDigitalSignature,
-				certificatesv1.UsageServerAuth,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages: []certificatesv1.KeyUsage{
+					certificatesv1.UsageDigitalSignature,
+					certificatesv1.UsageServerAuth,
+				},
 			},
 		},
 	}
@@ -128,7 +140,7 @@ func TestValidateKubeletServingCSRValid(t *testing.T) {
 		t.Run(fmt.Sprint(testCase.msg), func(t *testing.T) {
 			t.Parallel()
 
-			err := validateKubeletServingCSR(&testCase.x509cr, usages)
+			err := validateKubeletServingCSR(&testCase.x509cr, testCase.csrSpec)
 			assert.NoError(t, err)
 		})
 	}
@@ -150,7 +162,7 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 	tests := []struct {
 		msg           string
 		x509cr        x509.CertificateRequest
-		keyUsages     []certificatesv1.KeyUsage
+		csrSpec       certificatesv1.CertificateSigningRequestSpec
 		expectedError error
 	}{
 		{
@@ -161,7 +173,10 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 					Organization: []string{org},
 				},
 			},
-			keyUsages:     usages,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
 			expectedError: errDNSOrIPSANRequired,
 		},
 		{
@@ -173,7 +188,10 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 				},
 				DNSNames: []string{"kubernetes"},
 			},
-			keyUsages:     usages,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
 			expectedError: errDNSNameNotAllowed,
 		},
 		{
@@ -185,7 +203,25 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 				},
 				DNSNames: []string{"kubernetes.default.svc"},
 			},
-			keyUsages:     usages,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
+			expectedError: errDNSNameNotAllowed,
+		},
+		{
+			msg: "Invalid DNSNames wildcard",
+			x509cr: x509.CertificateRequest{
+				Subject: pkix.Name{
+					CommonName:   cname,
+					Organization: []string{org},
+				},
+				DNSNames: []string{"*.example.com"},
+			},
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
 			expectedError: errDNSNameNotAllowed,
 		},
 		{
@@ -198,7 +234,10 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 				DNSNames:    dnsNames,
 				IPAddresses: ipAddresses,
 			},
-			keyUsages:     usages,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
 			expectedError: errOrganizationNotSystemNodes,
 		},
 		{
@@ -211,8 +250,42 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 				DNSNames:    dnsNames,
 				IPAddresses: ipAddresses,
 			},
-			keyUsages:     usages,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
 			expectedError: errCommonNameNotSystemNode,
+		},
+		{
+			msg: "Invalid CommonName empty node name",
+			x509cr: x509.CertificateRequest{
+				Subject: pkix.Name{
+					CommonName:   "system:node:",
+					Organization: []string{org},
+				},
+				DNSNames: []string{"invalid"},
+			},
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
+			expectedError: errCommonNameNotSystemNode,
+		},
+		{
+			msg: "CommonName does not match username",
+			x509cr: x509.CertificateRequest{
+				Subject: pkix.Name{
+					CommonName:   "system:node:other",
+					Organization: []string{org},
+				},
+				DNSNames:    dnsNames,
+				IPAddresses: ipAddresses,
+			},
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
+			expectedError: errCommonNameNotMatchingUsername,
 		},
 		{
 			msg: "Has email addresses",
@@ -225,7 +298,10 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 				DNSNames:       dnsNames,
 				IPAddresses:    ipAddresses,
 			},
-			keyUsages:     usages,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
 			expectedError: errEmailSANNotAllowed,
 		},
 		{
@@ -239,7 +315,10 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 				DNSNames:    dnsNames,
 				IPAddresses: ipAddresses,
 			},
-			keyUsages:     usages,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages:   usages,
+			},
 			expectedError: errURISANNotAllowed,
 		},
 		{
@@ -252,10 +331,13 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 				DNSNames:    dnsNames,
 				IPAddresses: ipAddresses,
 			},
-			keyUsages: []certificatesv1.KeyUsage{
-				certificatesv1.UsageDigitalSignature,
-				certificatesv1.UsageServerAuth,
-				certificatesv1.UsageClientAuth,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages: []certificatesv1.KeyUsage{
+					certificatesv1.UsageDigitalSignature,
+					certificatesv1.UsageServerAuth,
+					certificatesv1.UsageClientAuth,
+				},
 			},
 			expectedError: errKeyUsageMismatch,
 		},
@@ -269,9 +351,12 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 				DNSNames:    dnsNames,
 				IPAddresses: ipAddresses,
 			},
-			keyUsages: []certificatesv1.KeyUsage{
-				certificatesv1.UsageDigitalSignature,
-				certificatesv1.UsageDigitalSignature,
+			csrSpec: certificatesv1.CertificateSigningRequestSpec{
+				Username: cname,
+				Usages: []certificatesv1.KeyUsage{
+					certificatesv1.UsageDigitalSignature,
+					certificatesv1.UsageDigitalSignature,
+				},
 			},
 			expectedError: errKeyUsageMismatch,
 		},
@@ -281,7 +366,7 @@ func TestValidateKubeletServingCSRInvalid(t *testing.T) {
 		t.Run(fmt.Sprint(testCase.msg), func(t *testing.T) {
 			t.Parallel()
 
-			err := validateKubeletServingCSR(&testCase.x509cr, testCase.keyUsages)
+			err := validateKubeletServingCSR(&testCase.x509cr, testCase.csrSpec)
 			assert.NotNil(t, err)
 			assert.Contains(t, err.Error(), testCase.expectedError.Error())
 		})

@@ -11,16 +11,17 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/siderolabs/talos-cloud-controller-manager/pkg/certificatesigningrequest"
 	"github.com/siderolabs/talos-cloud-controller-manager/pkg/nodeselector"
 	"github.com/siderolabs/talos-cloud-controller-manager/pkg/transformer"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 
+	certificatesv1 "k8s.io/api/certificates/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
-	cloudproviderapi "k8s.io/cloud-provider/api"
 )
 
 func TestGetNodeAddresses(t *testing.T) {
@@ -398,9 +399,6 @@ func TestCSRNodeChecks(t *testing.T) {
 				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "node2",
-					Annotations: map[string]string{
-						cloudproviderapi.AnnotationAlphaProvidedIPAddr: "1.2.3.4",
-					},
 				},
 			},
 			{
@@ -410,9 +408,6 @@ func TestCSRNodeChecks(t *testing.T) {
 				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "node-int",
-					Annotations: map[string]string{
-						cloudproviderapi.AnnotationAlphaProvidedIPAddr: "1.2.3.4",
-					},
 				},
 				Status: v1.NodeStatus{
 					Addresses: []v1.NodeAddress{
@@ -430,9 +425,6 @@ func TestCSRNodeChecks(t *testing.T) {
 				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "node-int-ext",
-					Annotations: map[string]string{
-						cloudproviderapi.AnnotationAlphaProvidedIPAddr: "1.2.3.4",
-					},
 				},
 				Status: v1.NodeStatus{
 					Addresses: []v1.NodeAddress{
@@ -447,64 +439,173 @@ func TestCSRNodeChecks(t *testing.T) {
 					},
 				},
 			},
+			{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "Node",
+					APIVersion: "v1",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-hostname",
+				},
+				Status: v1.NodeStatus{
+					Addresses: []v1.NodeAddress{
+						{
+							Type:    v1.NodeInternalIP,
+							Address: "1.2.3.4",
+						},
+						{
+							Type:    v1.NodeHostName,
+							Address: "node-hostname",
+						},
+						{
+							Type:    v1.NodeInternalDNS,
+							Address: "node-hostname.internal",
+						},
+					},
+				},
+			},
+			{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "Node",
+					APIVersion: "v1",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ip-192-168-135-66",
+				},
+				Status: v1.NodeStatus{
+					Addresses: []v1.NodeAddress{
+						{
+							Type:    v1.NodeInternalIP,
+							Address: "192.168.135.66",
+						},
+						{
+							Type:    v1.NodeHostName,
+							Address: "ip-192-168-135-66.eu-central-1.compute.internal",
+						},
+						{
+							Type:    v1.NodeInternalDNS,
+							Address: "ip-192-168-135-66.eu-central-1.compute.internal",
+						},
+					},
+				},
+			},
+			{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "Node",
+					APIVersion: "v1",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-dns",
+				},
+				Status: v1.NodeStatus{
+					Addresses: []v1.NodeAddress{
+						{
+							Type:    v1.NodeInternalIP,
+							Address: "10.0.0.5",
+						},
+						{
+							Type:    v1.NodeHostName,
+							Address: "node-dns",
+						},
+						{
+							Type:    v1.NodeInternalDNS,
+							Address: "node-dns.internal.example.com",
+						},
+						{
+							Type:    v1.NodeExternalDNS,
+							Address: "node-dns-public.example.com",
+						},
+					},
+				},
+			},
+			{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "Node",
+					APIVersion: "v1",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "192.168.113.10",
+				},
+				Status: v1.NodeStatus{
+					Addresses: []v1.NodeAddress{
+						{
+							Type:    v1.NodeHostName,
+							Address: "192.168.113.10",
+						},
+					},
+				},
+			},
+			{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "Node",
+					APIVersion: "v1",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-ipv6-noncanonical",
+				},
+				Status: v1.NodeStatus{
+					Addresses: []v1.NodeAddress{
+						{
+							Type:    v1.NodeInternalIP,
+							Address: "2001:0DB8:0000:0000:0000:0000:0000:0001",
+						},
+						{
+							Type:    v1.NodeHostName,
+							Address: "node-ipv6-noncanonical",
+						},
+					},
+				},
+			},
 		},
 	}
 
 	for _, tt := range []struct {
 		name          string
+		spec          certificatesv1.CertificateSigningRequestSpec
 		cert          *x509.CertificateRequest
 		expectedError error
-		expected      bool
+		expected      certificatesigningrequest.Verdict
 	}{
 		{
 			name: "fake node",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-non-existing",
+			},
 			cert: &x509.CertificateRequest{
 				DNSNames: []string{"node-non-existing"},
 			},
-			expectedError: fmt.Errorf("failed to get node node-non-existing: nodes \"node-non-existing\" not found"),
-			expected:      false,
+			expectedError: nil,
+			expected: certificatesigningrequest.Verdict{
+				Message: "csrNodeChecks: node node-non-existing not found",
+			},
 		},
 		{
-			name: "empty node",
+			name: "empty node1",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node1",
+			},
 			cert: &x509.CertificateRequest{
 				DNSNames: []string{"node1"},
 			},
-			expectedError: nil,
-			expected:      true,
+			expectedError: fmt.Errorf("node not initialized yet: node1"),
+			expected:      certificatesigningrequest.Verdict{},
 		},
 		{
-			name: "empty node",
+			name: "empty node2",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node2",
+			},
 			cert: &x509.CertificateRequest{
 				DNSNames: []string{"node2"},
 			},
-			expectedError: nil,
-			expected:      true,
+			expectedError: fmt.Errorf("node not initialized yet: node2"),
+			expected:      certificatesigningrequest.Verdict{},
 		},
 		{
 			name: "node with IP",
-			cert: &x509.CertificateRequest{
-				DNSNames: []string{"node2"},
-				IPAddresses: []net.IP{
-					net.ParseIP("1.2.3.4"),
-				},
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-int",
 			},
-			expectedError: nil,
-			expected:      true,
-		},
-		{
-			name: "node with fake IPs",
-			cert: &x509.CertificateRequest{
-				DNSNames: []string{"node2"},
-				IPAddresses: []net.IP{
-					net.ParseIP("1.2.3.4"),
-					net.ParseIP("2000::1"),
-				},
-			},
-			expectedError: nil,
-			expected:      false,
-		},
-		{
-			name: "node with node-IP",
 			cert: &x509.CertificateRequest{
 				DNSNames: []string{"node-int"},
 				IPAddresses: []net.IP{
@@ -512,10 +613,44 @@ func TestCSRNodeChecks(t *testing.T) {
 				},
 			},
 			expectedError: nil,
-			expected:      true,
+			expected:      certificatesigningrequest.Verdict{Valid: true},
+		},
+		{
+			name: "node with fake IPs",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-hostname",
+			},
+			cert: &x509.CertificateRequest{
+				DNSNames: []string{"node-hostname", "node-hostname.internal"},
+				IPAddresses: []net.IP{
+					net.ParseIP("1.2.3.4"),
+					net.ParseIP("2000::1"),
+				},
+			},
+			expectedError: nil,
+			expected: certificatesigningrequest.Verdict{
+				Message: `csrNodeChecks: CSR IPAddresses 2000::1 doesn't match Node(In/Ex)ternalIP addresses ["1.2.3.4"]`,
+			},
+		},
+		{
+			name: "node with node-IP",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-int",
+			},
+			cert: &x509.CertificateRequest{
+				DNSNames: []string{"node-int"},
+				IPAddresses: []net.IP{
+					net.ParseIP("1.2.3.4"),
+				},
+			},
+			expectedError: nil,
+			expected:      certificatesigningrequest.Verdict{Valid: true},
 		},
 		{
 			name: "node with node-IPs",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-int-ext",
+			},
 			cert: &x509.CertificateRequest{
 				DNSNames: []string{"node-int-ext"},
 				IPAddresses: []net.IP{
@@ -524,18 +659,137 @@ func TestCSRNodeChecks(t *testing.T) {
 				},
 			},
 			expectedError: nil,
-			expected:      true,
+			expected:      certificatesigningrequest.Verdict{Valid: true},
+		},
+		{
+			name: "node with matching hostname",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-hostname",
+			},
+			cert: &x509.CertificateRequest{
+				DNSNames: []string{"node-hostname.internal"},
+				IPAddresses: []net.IP{
+					net.ParseIP("1.2.3.4"),
+				},
+			},
+			expectedError: nil,
+			expected:      certificatesigningrequest.Verdict{Valid: true},
+		},
+		{
+			name: "node with mismatched hostname",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-hostname",
+			},
+			cert: &x509.CertificateRequest{
+				DNSNames: []string{"some-other-name"},
+				IPAddresses: []net.IP{
+					net.ParseIP("1.2.3.4"),
+				},
+			},
+			expectedError: nil,
+			expected: certificatesigningrequest.Verdict{
+				Message: `csrNodeChecks: CSR DNSName some-other-name doesn't match Node(In/Ex)ternalDNS names ["node-hostname" "node-hostname.internal"]`,
+			},
+		},
+		{
+			name: "node with case-insensitive hostname",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-hostname",
+			},
+			cert: &x509.CertificateRequest{
+				DNSNames: []string{"NODE-HOSTNAME.INTERNAL"},
+				IPAddresses: []net.IP{
+					net.ParseIP("1.2.3.4"),
+				},
+			},
+			expectedError: nil,
+			expected:      certificatesigningrequest.Verdict{Valid: true},
+		},
+		{
+			name: "node with hostname as FQDN prefix",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:ip-192-168-135-66",
+			},
+			cert: &x509.CertificateRequest{
+				DNSNames: []string{"ip-192-168-135-66.eu-central-1.compute.internal"},
+				IPAddresses: []net.IP{
+					net.ParseIP("192.168.135.66"),
+				},
+			},
+			expectedError: nil,
+			expected:      certificatesigningrequest.Verdict{Valid: true},
+		},
+		{
+			name: "node with internal and external DNS names",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-dns",
+			},
+			cert: &x509.CertificateRequest{
+				DNSNames: []string{"node-dns", "node-dns.internal.example.com", "NODE-DNS-PUBLIC.example.com"},
+				IPAddresses: []net.IP{
+					net.ParseIP("10.0.0.5"),
+				},
+			},
+			expectedError: nil,
+			expected:      certificatesigningrequest.Verdict{Valid: true},
+		},
+		{
+			name: "node with one valid and one foreign DNS name",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-dns",
+			},
+			cert: &x509.CertificateRequest{
+				DNSNames: []string{"node-dns", "other-node.internal.example.com"},
+				IPAddresses: []net.IP{
+					net.ParseIP("10.0.0.5"),
+				},
+			},
+			expectedError: nil,
+			expected: certificatesigningrequest.Verdict{
+				Message: `csrNodeChecks: CSR DNSName other-node.internal.example.com doesn't match Node(In/Ex)ternalDNS names ` +
+					`["node-dns" "node-dns.internal.example.com" "node-dns-public.example.com"]`,
+			},
+		},
+		{
+			name: "node with hostname set to its IP address",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:192.168.113.10",
+			},
+			cert: &x509.CertificateRequest{
+				DNSNames: []string{"192.168.113.10"},
+				IPAddresses: []net.IP{
+					net.ParseIP("192.168.113.10"),
+				},
+			},
+			expectedError: nil,
+			expected:      certificatesigningrequest.Verdict{Valid: true},
+		},
+		{
+			name: "node with non-canonical IPv6 address matches canonical CSR IP",
+			spec: certificatesv1.CertificateSigningRequestSpec{
+				Username: "system:node:node-ipv6-noncanonical",
+			},
+			cert: &x509.CertificateRequest{
+				DNSNames: []string{"node-ipv6-noncanonical"},
+				IPAddresses: []net.IP{
+					net.ParseIP("2001:db8::1"),
+				},
+			},
+			expectedError: nil,
+			expected:      certificatesigningrequest.Verdict{Valid: true},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			kclient := fake.NewClientset(nodes)
-			approve, err := CSRNodeChecks(ctx, kclient, tt.cert)
+			approve, err := CSRNodeChecks(ctx, kclient, tt.spec, tt.cert)
 
 			if tt.expectedError != nil {
-				assert.Equal(t, tt.expectedError.Error(), err.Error())
+				assert.EqualError(t, err, tt.expectedError.Error())
 			} else {
-				assert.Equal(t, tt.expected, approve)
+				assert.NoError(t, err)
 			}
+
+			assert.Equal(t, tt.expected, approve)
 		})
 	}
 }
